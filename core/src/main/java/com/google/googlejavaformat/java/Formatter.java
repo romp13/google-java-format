@@ -36,6 +36,7 @@ import java.io.IOException;
 import java.net.URI;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedList;
 import java.util.List;
 import org.openjdk.javax.tools.Diagnostic;
 import org.openjdk.javax.tools.DiagnosticCollector;
@@ -231,7 +232,22 @@ public final class Formatter {
    */
   public String formatSource(String input, Collection<Range<Integer>> characterRanges)
       throws FormatterException {
-    return JavaOutput.applyReplacements(input, getFormatReplacements(input, characterRanges));
+
+    RangeSet<Integer> rangeSet = TreeRangeSet.create();
+    for (Range<Integer> range : characterRanges) {
+      rangeSet.add(range);
+    }
+    List<String> literals = new LinkedList<>();
+    List<Boolean> nonNLS = new LinkedList<>();
+    boolean hasAnyNonNLS = NonNLSHelper.extractLiteralsAndNonNLS(input, literals, nonNLS, rangeSet);
+    if(hasAnyNonNLS) {
+      String contentWithoutNLS = NonNLSHelper.removeNonNLS(input, rangeSet);
+      String formattedContentWithoutNLS = JavaOutput.applyReplacements(contentWithoutNLS, getFormatReplacements(contentWithoutNLS, characterRanges));
+      return NonNLSHelper.reinjectNonNLS(formattedContentWithoutNLS, literals, nonNLS);
+    }
+    else {
+      return JavaOutput.applyReplacements(input, getFormatReplacements(input, characterRanges));
+    }
   }
 
   /**
