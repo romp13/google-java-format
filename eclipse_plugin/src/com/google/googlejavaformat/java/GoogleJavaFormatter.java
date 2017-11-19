@@ -16,9 +16,12 @@ package com.google.googlejavaformat.java;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.Range;
+import com.google.common.collect.RangeSet;
+import com.google.common.collect.TreeRangeSet;
 import com.google.googlejavaformat.java.SnippetFormatter.SnippetKind;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedList;
 import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.formatter.CodeFormatter;
 import org.eclipse.jface.text.IRegion;
@@ -82,16 +85,52 @@ public class GoogleJavaFormatter extends CodeFormatter {
         default:
           throw new IllegalArgumentException(String.format("Unknown snippet kind: %d", kind));
       }
-      List<Replacement> replacements =
-          new SnippetFormatter()
-              .format(
-                  snippetKind, source, rangesFromRegions(regions), initialIndent, includeComments);
-      if (idempotent(source, regions, replacements)) {
-        // Do not create edits if there's no diff.
-        return null;
+
+      String initialSource = new String(source);
+
+      // compute range set
+      List<Range<Integer>> ranges = rangesFromRegions(regions);
+      RangeSet<Integer> rangeSet = TreeRangeSet.create();
+      for (Range<Integer> range : ranges) {
+        rangeSet.add(range);
       }
-      // Convert replacements to text edits.
-      return editFromReplacements(replacements);
+
+      // if whole file also cleanup imports
+      if(rangeSet.encloses(Range.closedOpen(0, initialSource.length()))) {
+        source = ImportOrderer.reorderImports(source);
+        source = RemoveUnusedImports.removeUnusedImports(source);
+        ranges.clear();
+        ranges.add(Range.closedOpen(0, source.length()));
+        rangeSet = TreeRangeSet.create();
+        rangeSet.add(ranges.get(0));
+      }
+
+      // remove non-nls notations in the range
+      List<String> literals = new LinkedList<>();
+      List<Boolean> nonNLS = new LinkedList<>();
+      boolean hasAnyNonNLS = NonNLSHelper.extractLiteralsAndNonNLS(source, literals, nonNLS, rangeSet);
+      if(hasAnyNonNLS) {
+        source = NonNLSHelper.removeNonNLS(source, rangeSet);
+      }
+
+      // do the usual formatting
+      List<Replacement> replacements =
+              new SnippetFormatter()
+                      .format(snippetKind, source, ranges, initialIndent, includeComments);
+
+      // apply the changes
+      source = JavaOutput.applyReplacements(source, replacements);
+
+      // insert non-nls notations back
+      if(hasAnyNonNLS) {
+        source = NonNLSHelper.reinjectNonNLS(source, literals, nonNLS);
+      }
+
+      // if any change send ReplaceEdit
+      if(source.equals(initialSource))
+        	return null;
+      else
+        	return new ReplaceEdit(0, initialSource.length(), source);
     } catch (IllegalArgumentException | FormatterException exception) {
       // Do not format on errors.
       return null;
